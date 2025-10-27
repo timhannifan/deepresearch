@@ -1,0 +1,89 @@
+services:
+  qdrant:
+    # Vector database for research
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  redis:
+    # Message queue for llama-deploy
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  apiserver:
+    # LlamaDeploy API server
+    image: llamaindex/llama-deploy:main
+    environment:
+      QDRANT_HOST: qdrant
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+      WORKFLOW_TIMEOUT: 600
+      PYTHONPATH: /opt/app/src
+    ports:
+      - "4501:4501"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: llamactl status
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - ./:/opt/app
+    working_dir: /opt/app
+
+  deploy_workflows:
+    # Deploy the research workflow
+    image: llamaindex/llama-deploy:main
+    environment:
+      PYTHONPATH: /opt/app/src
+    volumes:
+      - ./:/opt/app
+      - ./llama-deploy-config.yaml:/opt/app/llama-deploy-config.yaml
+    working_dir: /opt/app
+    depends_on:
+      apiserver:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "Attempting to deploy workflows..." &&
+        llamactl -s http://apiserver:4501 -t 60 deploy llama-deploy-config.yaml
+
+  deepresearch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/project
+    environment:
+      REPO_ROOT: /project
+      DATA_DIR: /project/data
+      PYTHONPATH: /project/src
+      OPENAI_API_KEY: ${OPENAI_API_KEY}  # For embeddings
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY}
+      # Suppress warnings
+      PYTHONWARNINGS: ignore::UserWarning:pydantic._internal._generate_schema
+      # Suppress transformers warnings by setting environment variable
+      TRANSFORMERS_VERBOSITY: error
+    shm_size: '16gb'
+    depends_on:
+      - qdrant
+    # At least one of stdin_open or tty is required to make devcontainer work
+    stdin_open: true
+    tty: true
+
+volumes:
+  qdrant_data:

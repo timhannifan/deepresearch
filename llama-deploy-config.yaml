@@ -1,0 +1,32 @@
+name: DeepResearchDeployment
+
+control-plane:
+  port: 8000
+  timeout: 600  # 10 minutes timeout for API calls
+
+message-queue:
+  type: redis
+  host: redis
+  port: 6379
+
+default-service: deep_research_workflow
+
+services:
+  deep_research_workflow:
+    name: Deep Research Workflow
+    source:
+      type: local
+      name: src/deepresearch
+    path: deepresearch:deep_research_w
+    timeout: 600  # 10 minutes timeout for complex deep research
+    python-dependencies:
+      - llama-index==0.12.45
+      - llama-index-llms-cerebras
+      - llama-index-postprocessor-rankgpt-rerank
+      - llama-index-vector-stores-qdrant
+      - llama-index-embeddings-openai
+      - qdrant-client==1.14.3
+      - redis==5.3.0
+      - python-dotenv==1.1.0
+      - tavily-python>=0.7.12
+      - openai>=1.93.0
