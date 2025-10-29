@@ -29,7 +29,7 @@ class QdrantConfig:
     EMBEDDING_DIM = 1536  # OpenAI embedding dimension
 
     # LLM settings
-    CEREBRAS_MODEL = "llama-3.3-70b"
+    CEREBRAS_MODEL = "llama-4-scout-17b-16e-instruct"  # "llama-3.3-70b"
 
     # Sample data
     SAMPLE_PAPERS_DIR = "data/sample_papers"

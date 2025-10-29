@@ -28,7 +28,7 @@ async def main() -> None:
 
     # Run workflow with topic as input
     result = await workflow.run(topic=research_topic)
-    
+
     logger.info("Deep research workflow completed!")
     logger.info("Final result: %s", result)
 

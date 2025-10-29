@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Direct Chainlit app that uses the workflow directly."""
 
-import asyncio
 import os
 import sys
 
@@ -33,22 +32,24 @@ async def on_message(message: cl.Message) -> None:
     try:
         # Get the user's research topic
         research_topic = message.content.strip()
-        
+
         if not research_topic:
-            await cl.Message(content="Please provide a research topic to investigate.").send()
+            await cl.Message(
+                content="Please provide a research topic to investigate."
+            ).send()
             return
 
         # Show initial message
         msg = cl.Message(
             content=f"🔍 **Starting deep research on:** {research_topic}\n\n"
             "Initializing research workflow...",
-            author="Deep Research Assistant"
+            author="Deep Research Assistant",
         )
         await msg.send()
 
         # Create and run the workflow
         workflow = DeepResearchWorkflow()
-        
+
         # Update message with progress
         msg.content = f"🔍 **Researching:** {research_topic}\n\n"
         msg.content += "✅ Research workflow initialized\n"
@@ -57,7 +58,7 @@ async def on_message(message: cl.Message) -> None:
 
         # Run the workflow
         result = await workflow.run(topic=research_topic)
-        
+
         # Update with completion
         msg.content = f"🔍 **Research completed for:** {research_topic}\n\n"
         msg.content += "✅ Research workflow completed\n"
@@ -66,8 +67,7 @@ async def on_message(message: cl.Message) -> None:
 
         # Send the final result
         await cl.Message(
-            content=f"# Research Report\n\n{result}",
-            author="Deep Research Assistant"
+            content=f"# Research Report\n\n{result}", author="Deep Research Assistant"
         ).send()
 
     except Exception as e:

@@ -1,8 +1,14 @@
 """Deep research workflow orchestration."""
 
 from llama_index.core.tools import FunctionTool
-from llama_index.core.workflow import Context, Workflow, step
-from llama_index.core.workflow import Event, StartEvent, StopEvent
+from llama_index.core.workflow import (
+    Context,
+    Event,
+    StartEvent,
+    StopEvent,
+    Workflow,
+    step,
+)
 
 from deepresearch.agents.question_agent import QuestionAgent
 from deepresearch.agents.report_agent import ReportAgent
@@ -152,10 +158,8 @@ For each research question, determine the domain expertise needed and create/use
     @step
     async def research_questions(self, ctx: Context, ev: QuestionEvent) -> AnswerEvent:
         """Research a specific question using ReAct agent."""
-
         # Use ReAct agent for intelligent research with web search
         try:
-
             # Create a research agent with web search capability
             research_tools = [
                 FunctionTool.from_defaults(search_web),
@@ -185,7 +189,7 @@ Provide a detailed, well-structured answer that directly addresses the question.
             response = await research_agent.arun(ev.question)
             answer = str(response)
 
-        except Exception as e:
+        except Exception:
             # Fallback to simple web search
             try:
                 search_results = await search_web(ev.question, max_results=5)
@@ -204,7 +208,6 @@ This research was conducted using web search to find current information and mul
         self, ctx: Context, ev: AnswerEvent
     ) -> StopEvent | None:
         """Synthesize final report from the answer."""
-
         # Get topic from context
         topic = await ctx.get("topic", "Research Topic")
 
@@ -215,7 +218,7 @@ This research was conducted using web search to find current information and mul
                 topic, [ev.question], [ev.answer]
             )
 
-        except Exception as e:
+        except Exception:
             # Fallback to a simple analysis
             synthesized_analysis = f"""
             Based on the research findings for "{ev.question}", here are the key insights:

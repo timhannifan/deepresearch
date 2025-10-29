@@ -1,14 +1,17 @@
-"""ReAct agent workflow implementation."""
+"""ReAct agent workflow implementation with minimal logging."""
+
+import inspect
 
 from llama_index.core.agent.react import ReActChatFormatter, ReActOutputParser
 from llama_index.core.agent.react.types import (
     ActionReasoningStep,
     ObservationReasoningStep,
+    ResponseReasoningStep,
 )
 from llama_index.core.llms import ChatMessage
 from llama_index.core.llms.llm import LLM
 from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.tools import ToolOutput, ToolSelection
+from llama_index.core.tools import FunctionTool, ToolOutput, ToolSelection
 from llama_index.core.tools.types import BaseTool
 from llama_index.core.workflow import (
     Context,
@@ -128,36 +131,9 @@ class ReActAgent(Workflow):
         if not response:
             return PrepEvent()
 
-        # Stream the raw response for debugging
-        ctx.write_event_to_stream(
-            StreamEvent(delta=f"\n🤔 Raw LLM Response:\n{response.message.content}\n")
-        )
-
         try:
             reasoning_step = self.output_parser.parse(response.message.content)
             current_reasoning.append(reasoning_step)
-
-            # Stream reasoning step details
-            if isinstance(reasoning_step, ActionReasoningStep):
-                ctx.write_event_to_stream(
-                    ReasoningEvent(
-                        reasoning=f"🔧 Action: {reasoning_step.action}\n"
-                        f"📝 Input: {reasoning_step.action_input}\n"
-                        f"💭 Thought: {reasoning_step.thought}\n"
-                    )
-                )
-            elif isinstance(reasoning_step, ObservationReasoningStep):
-                ctx.write_event_to_stream(
-                    ReasoningEvent(
-                        reasoning=f"👁️ Observation: {reasoning_step.observation}\n"
-                    )
-                )
-            else:
-                ctx.write_event_to_stream(
-                    ReasoningEvent(
-                        reasoning=f"📋 Response: {reasoning_step.response}\n"
-                    )
-                )
 
             if reasoning_step.is_done:
                 memory.put(
@@ -260,17 +236,8 @@ class ReActAgent(Workflow):
             # If we detected a final answer, return it
             if is_final_answer and answer_text:
                 try:
-                    from llama_index.core.agent.react.types import (
-                        ResponseReasoningStep,
-                    )
-
                     final_step = ResponseReasoningStep(response=answer_text)
                     current_reasoning.append(final_step)
-
-                    # Stream the final response
-                    ctx.write_event_to_stream(
-                        ReasoningEvent(reasoning=f"📋 Response: {answer_text}\n")
-                    )
 
                     # Store in memory and return stop event
                     memory.put(ChatMessage(role="assistant", content=answer_text))
@@ -291,11 +258,8 @@ class ReActAgent(Workflow):
 
             # Original error handling for other cases
             # Only log the error if we haven't successfully extracted an answer
-            error_msg = f"There was an error in parsing my reasoning: {e}"
+            error_msg = f"Error parsing reasoning: {e}"
             current_reasoning.append(ObservationReasoningStep(observation=error_msg))
-            ctx.write_event_to_stream(
-                ReasoningEvent(reasoning=f"❌ Error: {error_msg}\n")
-            )
             ctx.data["current_reasoning"] = current_reasoning
 
         # If no tool calls or final response, iterate again
@@ -317,24 +281,22 @@ class ReActAgent(Workflow):
                 current_reasoning.append(
                     ObservationReasoningStep(observation=error_msg)
                 )
-                ctx.write_event_to_stream(ReasoningEvent(reasoning=f"❌ {error_msg}\n"))
                 continue
 
             try:
-                ctx.write_event_to_stream(
-                    ReasoningEvent(
-                        reasoning=f"🔧 Executing tool: {tool_call.tool_name}\n"
-                        f"📝 With arguments: {tool_call.tool_kwargs}\n"
-                    )
-                )
-
+                # Handle both sync and async tools
                 tool_output = tool(**tool_call.tool_kwargs)
-                sources.append(tool_output)
+                # Check if tool is async and await if needed
+                if inspect.iscoroutine(tool_output):
+                    tool_output = await tool_output
 
-                # Stream tool output
-                ctx.write_event_to_stream(
-                    ReasoningEvent(reasoning=f"✅ Tool result: {tool_output.content}\n")
-                )
+                # If output is already a ToolOutput, use it; otherwise wrap it
+                if not isinstance(tool_output, ToolOutput):
+                    tool_output = ToolOutput(
+                        content=str(tool_output), tool_name=tool_call.tool_name
+                    )
+
+                sources.append(tool_output)
 
                 current_reasoning.append(
                     ObservationReasoningStep(observation=tool_output.content)
@@ -344,7 +306,6 @@ class ReActAgent(Workflow):
                 current_reasoning.append(
                     ObservationReasoningStep(observation=error_msg)
                 )
-                ctx.write_event_to_stream(ReasoningEvent(reasoning=f"❌ {error_msg}\n"))
 
         # Save new state in context
         ctx.data["sources"] = sources
@@ -356,7 +317,6 @@ class ReActAgent(Workflow):
 
 # Test the workflow
 if __name__ == "__main__":
-    from llama_index.core.tools import FunctionTool
 
     def add(x: int, y: int) -> int:
         """Useful function to add two numbers."""
