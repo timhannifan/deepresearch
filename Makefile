@@ -22,10 +22,11 @@ endif
 # Global mount for data directory
 mount_data := -v $(DATA_DIR):/project/data
 
-.PHONY: help build run-interactive test \
+.PHONY: help build run-interactive test fmt lint \
         demo-research demo-react-cli research-workflow react-cli \
         load-data query-docs test-search \
         chainlit chainlit-direct \
+        mcp-server mcp-server-http \
         deploy-start deploy-logs stop clean
 
 #
@@ -57,23 +58,35 @@ query-docs: ## Query documents with custom question (usage: make query-docs QUER
 test-search: ## Test vector search functionality
 	docker compose run --rm $(mount_data) $(project_name) uv run python -m deepresearch.scripts.test_vector_search
 
+test-mcp-tools: ## Test MCP tools loading (requires MCP server running)
+	docker compose run --rm $(mount_data) $(project_name) uv run python -m deepresearch.scripts.test_mcp_tools
+
 #
 # Web Interface (Chainlit)
 #
 
 chainlit: start ## Start Chainlit frontend with llama-deploy backend
-	docker compose run --rm $(mount_data) -p 8000:8000 $(project_name) uv run chainlit run src/deepresearch/chainlit_deploy_app.py
+	docker compose run --rm $(mount_data) -p 8000:8000 $(project_name) uv run chainlit run --host 0.0.0.0 --port 8000 src/deepresearch/chainlit_deploy_app.py
 
 chainlit-direct: ## Start Chainlit frontend with direct workflow (starts qdrant)
 	@docker compose up -d qdrant
 	@sleep 2
-	docker compose run --rm $(mount_data) -p 8000:8000 $(project_name) uv run chainlit run src/deepresearch/chainlit_direct_app.py
+	docker compose run --rm $(mount_data) -p 8000:8000 $(project_name) uv run chainlit run --host 0.0.0.0 --port 8000 src/deepresearch/chainlit_direct_app.py
 
 chainlit-react: ## Start Chainlit frontend with ReAct agent (starts qdrant)
 	@docker compose up -d qdrant
 	@sleep 2
-	docker compose run --rm $(mount_data) -p 8000:8000 $(project_name) uv run chainlit run src/deepresearch/chainlit_react.py
+	docker compose run --rm $(mount_data) -p 8000:8000 $(project_name) uv run chainlit run --host 0.0.0.0 --port 8000 src/deepresearch/chainlit_react.py
 
+#
+# MCP Server
+#
+
+mcp-server: ## Start MCP server with stdio transport (for MCP Inspector)
+	docker compose run --rm $(mount_data) $(project_name) bash -c "cd /project/mcp_server && uv run python research_server.py"
+
+mcp-server-http: ## Start MCP server with HTTP transport (for LlamaIndex integration)
+	docker compose run --rm $(mount_data) -p 10000:10000 $(project_name) bash -c "cd /project/mcp_server && uv run python research_server.py --http"
 
 #
 # Development
@@ -87,6 +100,12 @@ run-interactive: build ## Run interactive bash session in container
 
 test: build ## Run all tests with pytest
 	docker compose run --rm $(mount_data) $(project_name) uv run python -m pytest -v
+
+fmt: ## Format code with ruff
+	docker compose run --rm $(mount_data) $(project_name) uv run ruff format
+
+lint: ## Lint code with ruff (apply safe fixes)
+	docker compose run --rm $(mount_data) $(project_name) uv run ruff check --fix
 
 logs: ## View service logs
 	docker compose logs -f
@@ -128,6 +147,10 @@ help: ## Show this help message
 	@echo "  chainlit                            Start Chainlit with llama-deploy backend"
 	@echo "  chainlit-direct                     Start Chainlit with direct workflow"
 	@echo "  chainlit-react                      Start Chainlit with ReAct agent"
+	@echo ""
+	@echo "=== MCP Server ==="
+	@echo "  mcp-server                          Start MCP server with stdio transport"
+	@echo "  mcp-server-http                     Start MCP server with HTTP transport"
 	@echo ""
 	@echo "=== Production Deployment ==="
 	@echo "  deploy-start                        Start all llama-deploy services"

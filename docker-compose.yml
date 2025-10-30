@@ -78,12 +78,31 @@ services:
       PYTHONWARNINGS: ignore::UserWarning:pydantic._internal._generate_schema
       # Suppress transformers warnings by setting environment variable
       TRANSFORMERS_VERBOSITY: error
+      # MCP server URL (use service name when running in Docker)
+      MCP_SERVER_URL: ${MCP_SERVER_URL:-http://mcp-server:10000/mcp}
     shm_size: '16gb'
     depends_on:
       - qdrant
+      - mcp-server
     # At least one of stdin_open or tty is required to make devcontainer work
     stdin_open: true
     tty: true
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/project
+      - ./data:/project/data
+    working_dir: /project/mcp_server
+    command: bash -c "uv run python research_server.py --http"
+    ports:
+      - "10000:10000"
+    environment:
+      DATA_DIR: /project/data
+      PORT: 10000
+      PYTHONPATH: /project
 
 volumes:
   qdrant_data:

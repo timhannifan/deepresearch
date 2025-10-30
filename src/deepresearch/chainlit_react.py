@@ -97,7 +97,7 @@ async def run_sub_agent_with_logging(agent_name: str, question: str) -> str:
 
 
 # Create orchestration tools (focus on delegation, not direct research)
-def get_orchestration_tools():
+def get_orchestration_tools() -> list[FunctionTool]:
     """Get the orchestration tools for the ReAct agent."""
     return [
         FunctionTool.from_defaults(create_react_agent),
@@ -240,10 +240,13 @@ async def on_message(message: cl.Message) -> None:
                                     )
                                     pending_sub_agent_execution = None
                                     continue
-                        except Exception:
-                            # If parsing fails, just continue normally
-                            pass
-                        pending_sub_agent_execution = None
+                        except Exception as e:
+                            # If parsing fails, just continue normally but log for debugging
+                            import logging as _logging
+                            _logging.getLogger(__name__).exception(
+                                "Failed to parse tool arguments: %s", e
+                            )
+                            pending_sub_agent_execution = None
 
                 # Skip displaying the tool execution message for run_sub_agent_with_logging
                 # since we handle it specially above
@@ -264,7 +267,7 @@ async def on_message(message: cl.Message) -> None:
         result = await handler
         final_response = result.get("response", "No response received")
         reasoning_steps = result.get("reasoning", [])
-        sources = result.get("sources", [])
+        # sources currently unused
 
         # Send final response as a separate persistent message
         # Show reasoning process first, then the final answer
@@ -296,7 +299,8 @@ async def on_message(message: cl.Message) -> None:
                 if hasattr(step, "observation") and step.observation:
                     # Show full observation if short, truncate if long
                     obs = str(step.observation)
-                    if len(obs) > 300:
+                    OBS_TRUNCATE = 300
+                    if len(obs) > OBS_TRUNCATE:
                         obs = obs[:300] + "..."
                     final_content += f"**Observation:** {obs}\n"
                 if hasattr(step, "response") and step.response:

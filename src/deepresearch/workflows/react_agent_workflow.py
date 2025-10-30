@@ -1,5 +1,7 @@
 """ReAct agent workflow implementation."""
 
+import logging
+
 from llama_index.core.agent.react import ReActChatFormatter, ReActOutputParser
 from llama_index.core.agent.react.types import (
     ActionReasoningStep,
@@ -20,6 +22,35 @@ from llama_index.core.workflow import (
 )
 
 from deepresearch.utils import get_llm
+
+
+def _extract_answer_only(text: str) -> str:
+    """Return only the content after an 'Answer:' label if present.
+
+    Otherwise, strip common ReAct prefixes like 'Thought:' and 'Action:' lines at the top.
+    """
+    if not text:
+        return text
+    lower = text.lower()
+    # Prefer explicit Answer: label
+    if "answer:" in lower:
+        idx = lower.find("answer:")
+        return text[idx + len("answer:") :].strip()
+    # Otherwise, drop leading Thought:/Action:/Observation: lines
+    lines = list(text.splitlines())
+    cleaned = []
+    skipping = True
+    for ln in lines:
+        ln_stripped = ln.strip()
+        if skipping and (ln_stripped.lower().startswith("thought:") or ln_stripped.lower().startswith("action:") or ln_stripped.lower().startswith("observation:")):
+            # skip these header lines
+            continue
+        skipping = False
+        cleaned.append(ln)
+    out = "\n".join(cleaned).strip()
+    return out if out else text
+
+logger = logging.getLogger(__name__)
 
 
 class PrepEvent(Event):
@@ -80,6 +111,9 @@ class ReActAgent(Workflow):
         """Handle new user message and prepare context."""
         # Clear sources
         ctx.data["sources"] = []
+        # Reset loop/parse guards
+        ctx.data["iterations"] = 0
+        ctx.data["parse_errors"] = 0
 
         # Init memory if needed
         memory = ctx.data.get("memory", None)
@@ -118,6 +152,37 @@ class ReActAgent(Workflow):
         self, ctx: Context, ev: InputEvent
     ) -> ToolCallEvent | StopEvent | PrepEvent:
         """Handle LLM input and parse response."""
+        # Iteration guard to prevent infinite loops
+        MAX_ITERATIONS = 12
+        iterations = int(ctx.data.get("iterations", 0)) + 1
+        ctx.data["iterations"] = iterations
+        if iterations > MAX_ITERATIONS:
+            # Fallback: compose a brief answer from available sources
+            sources = ctx.data.get("sources", [])
+            fallback = "I'm concluding to avoid a loop."
+            if sources:
+                try:
+                    latest = sources[-1].content if hasattr(sources[-1], "content") else str(sources[-1])
+                    fallback = latest
+                except Exception as _e:
+                    logger.exception("Failed selecting fallback source: %s", _e)
+            return StopEvent(result={
+                "response": fallback,
+                "sources": sources,
+                "reasoning": ctx.data.get("current_reasoning", []),
+            })
+        # If a previous tool produced a final response, short-circuit here
+        forced = ctx.data.get("force_final_response")
+        if forced:
+            ctx.data.pop("force_final_response", None)
+            return StopEvent(
+                result={
+                    "response": forced,
+                    "sources": ctx.data.get("sources", []),
+                    "reasoning": ctx.data.get("current_reasoning", []),
+                }
+            )
+
         chat_history = ev.input
         current_reasoning = ctx.data.get("current_reasoning", [])
         memory = ctx.data.get("memory")
@@ -161,7 +226,7 @@ class ReActAgent(Workflow):
 
             if reasoning_step.is_done:
                 memory.put(
-                    ChatMessage(role="assistant", content=reasoning_step.response)
+                    ChatMessage(role="assistant", content=_extract_answer_only(reasoning_step.response))
                 )
                 ctx.data["memory"] = memory
                 ctx.data["current_reasoning"] = current_reasoning
@@ -170,7 +235,7 @@ class ReActAgent(Workflow):
 
                 return StopEvent(
                     result={
-                        "response": reasoning_step.response,
+                        "response": _extract_answer_only(reasoning_step.response),
                         "sources": sources,
                         "reasoning": current_reasoning,
                     }
@@ -190,6 +255,18 @@ class ReActAgent(Workflow):
         except Exception as e:
             # Try to handle common parsing errors gracefully
             content = response.message.content
+            # Parse error guard
+            ctx.data["parse_errors"] = int(ctx.data.get("parse_errors", 0)) + 1
+            MAX_PARSE_ERRORS = 3
+            if ctx.data["parse_errors"] >= MAX_PARSE_ERRORS:
+                # Fallback: return best available content/sources
+                sources = ctx.data.get("sources", [])
+                fallback = _extract_answer_only(content) if content else "Unable to parse response."
+                return StopEvent(result={
+                    "response": fallback,
+                    "sources": sources,
+                    "reasoning": ctx.data.get("current_reasoning", []),
+                })
 
             # Check if this looks like a final answer with incorrect formatting
             is_final_answer = False
@@ -203,8 +280,8 @@ class ReActAgent(Workflow):
                         answer_text = content[answer_start + 7 :].strip()
                         if answer_text:
                             is_final_answer = True
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.exception("Failed extracting explicit Answer: %s", _e)
 
             # Check for indicators that LLM wants to provide final answer without tools
             if not is_final_answer:
@@ -234,15 +311,18 @@ class ReActAgent(Workflow):
                                         len(prefix) :
                                     ].strip()
 
-                            if len(potential_answer) > 20:  # Reasonable answer length
+                            MIN_FINAL_ANSWER_LEN = 20
+                            if len(potential_answer) > MIN_FINAL_ANSWER_LEN:  # Reasonable answer length
                                 answer_text = potential_answer
                                 is_final_answer = True
                                 break
 
                 # If no indicator found but content is substantial and doesn't contain Action:
                 # and we've done some reasoning steps, treat as final answer
-                if not is_final_answer and len(current_reasoning) > 2:
-                    if "Action:" not in content and len(content) > 100:
+                MIN_REASONING_STEPS = 2
+                if not is_final_answer and len(current_reasoning) > MIN_REASONING_STEPS:
+                    MIN_CONTENT_FOR_FINAL = 100
+                    if "Action:" not in content and len(content) > MIN_CONTENT_FOR_FINAL:
                         # Check if this looks like a thoughtful conclusion
                         if any(
                             word in content.lower()
@@ -304,6 +384,8 @@ class ReActAgent(Workflow):
     @step
     async def handle_tool_calls(self, ctx: Context, ev: ToolCallEvent) -> PrepEvent:
         """Handle tool calls and execute them."""
+        import inspect
+
         tool_calls = ev.tool_calls
         tools_by_name = {tool.metadata.get_name(): tool for tool in self.tools}
         current_reasoning = ctx.data.get("current_reasoning", [])
@@ -328,7 +410,20 @@ class ReActAgent(Workflow):
                     )
                 )
 
+                # Handle both sync and async tools
                 tool_output = tool(**tool_call.tool_kwargs)
+                
+                # Check if tool is async and await if needed
+                if inspect.iscoroutine(tool_output):
+                    tool_output = await tool_output
+
+                # If output is already a ToolOutput, use it; otherwise wrap it
+                if not isinstance(tool_output, ToolOutput):
+                    tool_output = ToolOutput(
+                        content=str(tool_output), tool_name=tool_call.tool_name
+                    )
+
+                # Keep full tool outputs to preserve completeness
                 sources.append(tool_output)
 
                 # Stream tool output
@@ -339,12 +434,35 @@ class ReActAgent(Workflow):
                 current_reasoning.append(
                     ObservationReasoningStep(observation=tool_output.content)
                 )
+
+                # Conditional stop: if sub-agent returned a substantive answer, end
+                if tool_call.tool_name == "run_sub_agent_with_logging":
+                    content = tool_output.content or ""
+                    cleaned = content.strip()
+                    # Strip common prefix like: "Sub-agent 'name' response: ..."
+                    import re as _re
+                    cleaned = _re.sub(r"^Sub-agent\s+'[^']+'\s+response:\s*", "", cleaned, flags=_re.IGNORECASE)
+                    # consider empty/placeholder responses as incomplete
+                    is_no_result = cleaned.strip() == "NO_RESULT"
+                    MIN_SUBSTANTIVE_LEN = 50
+                    is_substantive = (len(cleaned.strip()) > MIN_SUBSTANTIVE_LEN) and ("No response" not in cleaned)
+                    if is_substantive and not is_no_result:
+                        # set flag for next step to return StopEvent with cleaned content
+                        ctx.data["force_final_response"] = cleaned
             except Exception as e:
                 error_msg = f"Error calling tool {tool.metadata.get_name()}: {e}"
-                current_reasoning.append(
-                    ObservationReasoningStep(observation=error_msg)
-                )
-                ctx.write_event_to_stream(ReasoningEvent(reasoning=f"❌ {error_msg}\n"))
+                # Suppress cancel scope errors as they're usually cleanup issues
+                if "cancel scope" not in str(e).lower():
+                    current_reasoning.append(
+                        ObservationReasoningStep(observation=error_msg)
+                    )
+                    ctx.write_event_to_stream(ReasoningEvent(reasoning=f"❌ {error_msg}\n"))
+                else:
+                    # For cancel scope errors, try to get a result if possible
+                    logger.warning("Cancel scope error when calling tool %s (ignoring): %s", tool_call.tool_name, e)
+                    current_reasoning.append(
+                        ObservationReasoningStep(observation=f"Tool {tool_call.tool_name} completed but encountered cleanup error")
+                    )
 
         # Save new state in context
         ctx.data["sources"] = sources

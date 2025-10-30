@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-research-server"
+requires-python = ">=3.12"
+version = "0.1.0"
+dependencies = [
+  "fastmcp>=2.12.5",
+  "arxiv~=2.1.0",
+  "python-dotenv~=1.1.0",
+  "pydantic[email]>=2.11.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcp_server"]
+

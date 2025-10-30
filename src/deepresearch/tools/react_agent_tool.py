@@ -1,9 +1,13 @@
 """Tool for creating ReAct agents with different configurations."""
 
+import logging
+
 from llama_index.core.tools import FunctionTool
 
 from deepresearch.utils import get_llm
 from deepresearch.workflows.react_agent_workflow import ReActAgent
+
+logger = logging.getLogger(__name__)
 
 # Global registry to store created sub-agents
 SUB_AGENT_REGISTRY: dict[str, ReActAgent] = {}
@@ -23,10 +27,34 @@ async def run_sub_agent(
         Response from the sub-agent, optionally including execution details
     """
     try:
-        if agent_name not in SUB_AGENT_REGISTRY:
-            return f"Error: Sub-agent '{agent_name}' not found. Available agents: {list(SUB_AGENT_REGISTRY.keys())}"
+        # Try direct match, then common variations
+        target_name = agent_name
+        agent = SUB_AGENT_REGISTRY.get(target_name)
+        if not agent:
+            # Try with _specialist suffix
+            alt_name = f"{agent_name}_specialist"
+            agent = SUB_AGENT_REGISTRY.get(alt_name)
+            if agent:
+                target_name = alt_name
 
-        agent = SUB_AGENT_REGISTRY[agent_name]
+        # If still missing, try to auto-create a specialized agent with this name
+        if not agent:
+            try:
+                _ = await create_specialized_react_agent(agent_name)
+                # Newly created agents use the _specialist suffix
+                target_name = f"{agent_name}_specialist"
+                agent = SUB_AGENT_REGISTRY.get(target_name)
+            except Exception:
+                agent = None
+
+        if not agent:
+            return (
+                f"Error: Sub-agent '{agent_name}' not found and could not be auto-created. "
+                f"Available agents: {list(SUB_AGENT_REGISTRY.keys())}"
+            )
+
+        # Use resolved agent
+        agent = agent
 
         # Run the sub-agent
         handler = agent.run(input=question)
@@ -57,8 +85,9 @@ async def run_sub_agent(
                     if hasattr(step, "observation") and step.observation:
                         # Truncate long observations
                         obs = str(step.observation)
-                        if len(obs) > 300:
-                            obs = obs[:300] + "..."
+                        OBS_PREVIEW_LIMIT = 300
+                        if len(obs) > OBS_PREVIEW_LIMIT:
+                            obs = obs[:OBS_PREVIEW_LIMIT] + "..."
                         details_text += f"   Observation: {obs}\n"
 
             if sources:
@@ -174,21 +203,29 @@ async def create_specialized_react_agent(
 
         base_context = f"""You are an assistant that specializes in {specialization}.
         Your goal is to provide a thorough and detailed answer to the question.
-        You should use the tools provided to you to get the information you need.
-        Whatever information you find, you should cite your sources at the bottom of the answer.
-        Include paper names, authors, and publication dates as well as any relevant URLs for web sources.
+        STRICT TOOL POLICY:
+        - FIRST use `search_arxiv` to retrieve relevant arXiv IDs.
+        - THEN use `extract_info` for each ID to get details (title, authors, summary, pdf_url, published).
+        - DO NOT use other tools unless explicitly provided and relevant.
+        - If you cannot find relevant items with these tools, respond EXACTLY with: NO_RESULT
+
+        Answer composition:
+        - Summarize what you found based on extract_info outputs.
+        - Cite sources with PDF URLs when available.
+        - If nothing relevant was found, return NO_RESULT.
         """
 
-        # Add research tools
-        from deepresearch.tools.vector_search import query_papers_with_llm
+        # Add research tools (disabled for this specialist to avoid confusion)
+        # from deepresearch.tools.vector_search import query_papers_with_llm
         from deepresearch.tools.web_search import search_web
 
-        async def search_papers(query: str, top_k: int = 3) -> str:
-            """Search scientific papers for relevant information."""
-            try:
-                return await query_papers_with_llm(query, top_k=top_k)
-            except Exception as e:
-                return f"Error searching papers: {str(e)}"
+        # Disabled: vector DB paper search for this specialist
+        # async def search_papers(query: str, top_k: int = 3) -> str:
+        #     """Search scientific papers for relevant information."""
+        #     try:
+        #         return await query_papers_with_llm(query, top_k=top_k)
+        #     except Exception as e:
+        #         return f"Error searching papers: {str(e)}"
 
         async def search_web_research(query: str, max_results: int = 3) -> str:
             """Search the web for relevant information."""
@@ -198,11 +235,30 @@ async def create_specialized_react_agent(
                 return f"Error searching web: {str(e)}"
 
         research_tools = [
-            FunctionTool.from_defaults(search_papers),
-            FunctionTool.from_defaults(search_web_research),
+            # FunctionTool.from_defaults(search_papers),
+            # FunctionTool.from_defaults(search_web_research),
         ]
 
-        all_tools = default_tools + research_tools
+        # Load MCP tools if available (may not work with chainlit due to dependency conflicts)
+        mcp_tools = []
+        try:
+            from deepresearch.tools.mcp_tools import load_mcp_tools
+
+            logger.info("Attempting to load MCP tools from server...")
+            loaded_mcp_tools = await load_mcp_tools()
+            # Keep only the arXiv pipeline tools in desired order
+            name_to_tool = {t.metadata.get_name(): t for t in loaded_mcp_tools}
+            mcp_tools = [name_to_tool[n] for n in ["search_arxiv", "extract_info"] if n in name_to_tool]
+            if mcp_tools:
+                logger.info("✓ Loaded MCP tools: %s", [t.metadata.get_name() for t in mcp_tools])
+            else:
+                logger.warning("⚠ MCP tools loading returned empty list")
+        except ImportError as e:
+            logger.warning("Could not import MCP tools module (llama-index-tools-mcp may not be installed): %s", e)
+        except Exception as e:
+            logger.warning("Could not load MCP tools from server (make sure MCP server is running): %s", e)
+
+        all_tools = default_tools + research_tools + mcp_tools
 
         # Create the agent
         agent = ReActAgent(tools=all_tools, timeout=timeout, extra_context=base_context)

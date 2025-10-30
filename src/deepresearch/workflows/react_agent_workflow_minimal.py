@@ -179,8 +179,9 @@ class ReActAgent(Workflow):
                         answer_text = content[answer_start + 7 :].strip()
                         if answer_text:
                             is_final_answer = True
-                except Exception:
-                    pass
+                except Exception as _e:
+                    import logging as _logging
+                    _logging.getLogger(__name__).exception("Failed extracting explicit Answer: %s", _e)
 
             # Check for indicators that LLM wants to provide final answer without tools
             if not is_final_answer:
@@ -210,15 +211,18 @@ class ReActAgent(Workflow):
                                         len(prefix) :
                                     ].strip()
 
-                            if len(potential_answer) > 20:  # Reasonable answer length
+                            MIN_FINAL_ANSWER_LEN = 20
+                            if len(potential_answer) > MIN_FINAL_ANSWER_LEN:  # Reasonable answer length
                                 answer_text = potential_answer
                                 is_final_answer = True
                                 break
 
                 # If no indicator found but content is substantial and doesn't contain Action:
                 # and we've done some reasoning steps, treat as final answer
-                if not is_final_answer and len(current_reasoning) > 2:
-                    if "Action:" not in content and len(content) > 100:
+                MIN_REASONING_STEPS = 2
+                if not is_final_answer and len(current_reasoning) > MIN_REASONING_STEPS:
+                    MIN_CONTENT_FOR_FINAL = 100
+                    if "Action:" not in content and len(content) > MIN_CONTENT_FOR_FINAL:
                         # Check if this looks like a thoughtful conclusion
                         if any(
                             word in content.lower()

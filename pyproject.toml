@@ -26,8 +26,9 @@ dependencies = [
   "llama-index-llms-cerebras>=0.1.0",
   "qdrant-client>=1.7.0",
   "tavily-python>=0.7.12",
-  "chainlit==1.0.0",
+  "chainlit>=2.0.0",
   "workflows>=0.1.0",
+  "llama-index-tools-mcp>=0.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -22,6 +22,12 @@ API_BASE_URL = "http://host.docker.internal:4501"
 DEPLOYMENT_NAME = "DeepResearchDeployment"
 
 
+HTTP_OK = 200
+STEP_A = 5
+STEP_B = 15
+STEP_C = 25
+
+
 @cl.on_chat_start
 async def on_chat_start() -> None:
     """Initialize the chat session."""
@@ -34,7 +40,7 @@ async def on_chat_start() -> None:
                 headers={"Content-Type": "application/json"},
             )
 
-            if response.status_code == 200:
+            if response.status_code == HTTP_OK:
                 session_data = response.json()
                 session_id = session_data.get("session_id")
                 cl.user_session.set("session_id", session_id)
@@ -85,7 +91,7 @@ async def on_chat_message(message: cl.Message) -> None:
                 headers={"Content-Type": "application/json"},
             )
 
-            if task_response.status_code == 200:
+            if task_response.status_code == HTTP_OK:
                 task_data = task_response.json()
                 task_id = task_data.get("task_id")
 
@@ -111,7 +117,7 @@ async def on_chat_message(message: cl.Message) -> None:
                         headers={"Content-Type": "application/json"},
                     )
 
-                    if result_response.status_code == 200:
+                    if result_response.status_code == HTTP_OK:
                         result_data = result_response.json()
                         result = result_data.get("result")
                         if result:  # Task completed
@@ -119,11 +125,11 @@ async def on_chat_message(message: cl.Message) -> None:
 
                     # Update progress message with simple steps
                     step = retry_count + 1
-                    if step <= 5:
+                    if step <= STEP_A:
                         progress_msg = f"Generating research question... ({step}/30)"
-                    elif step <= 15:
+                    elif step <= STEP_B:
                         progress_msg = f"Researching topic... ({step}/30)"
-                    elif step <= 25:
+                    elif step <= STEP_C:
                         progress_msg = f"Analyzing findings... ({step}/30)"
                     else:
                         progress_msg = f"Creating report... ({step}/30)"
@@ -136,7 +142,7 @@ async def on_chat_message(message: cl.Message) -> None:
                     if retry_count < max_retries:
                         await asyncio.sleep(10)  # Wait 10 seconds before retry
 
-                if result_response and result_response.status_code == 200:
+                if result_response and result_response.status_code == HTTP_OK:
                     result_data = result_response.json()
                     result = result_data.get("result", "No result returned")
 
